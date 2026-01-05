@@ -1,11 +1,32 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: gitea-runner-operator
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - gitea.bpg.pw
+  resources:
+  - runnergroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gitea.bpg.pw
+  resources:
+  - runnergroups/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - gitea.bpg.pw
+  resources:
+  - runnergroups/status
+  verbs:
+  - get
+  - patch
+  - update

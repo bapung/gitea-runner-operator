@@ -17,25 +17,70 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// RunnerGroupScope defines the scope of the runner group
+type RunnerGroupScope string
+
+const (
+	// RunnerGroupScopeGlobal means the runner group is available globally
+	RunnerGroupScopeGlobal RunnerGroupScope = "global"
+	// RunnerGroupScopeOrg means the runner group is scoped to an organization
+	RunnerGroupScopeOrg RunnerGroupScope = "org"
+	// RunnerGroupScopeRepo means the runner group is scoped to a repository
+	RunnerGroupScopeRepo RunnerGroupScope = "repo"
+)
+
 // RunnerGroupSpec defines the desired state of RunnerGroup.
 type RunnerGroupSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Scope defines the scope of the runner (global, org, repo)
+	// +kubebuilder:validation:Enum=global;org;repo
+	// +kubebuilder:validation:Required
+	Scope RunnerGroupScope `json:"scope"`
 
-	// Foo is an example field of RunnerGroup. Edit runnergroup_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Org is required if scope is 'org'
+	// +optional
+	Org string `json:"org,omitempty"`
+
+	// Repo is required if scope is 'repo'
+	// +optional
+	Repo string `json:"repo,omitempty"`
+
+	// GiteaURL is the base URL of the Gitea instance
+	// +kubebuilder:validation:Required
+	GiteaURL string `json:"giteaURL"`
+
+	// Labels to assign to the runner
+	// +optional
+	Labels []string `json:"labels,omitempty"`
+
+	// MaxActiveRunners is the maximum number of concurrent jobs
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Required
+	MaxActiveRunners int `json:"maxActiveRunners"`
+
+	// RegistrationTokenRef references the secret containing the runner registration token
+	// +kubebuilder:validation:Required
+	RegistrationTokenRef corev1.SecretKeySelector `json:"registrationToken"`
+
+	// AuthTokenRef references the secret containing the Gitea API token for polling
+	// +kubebuilder:validation:Required
+	AuthTokenRef corev1.SecretKeySelector `json:"authToken"`
 }
 
 // RunnerGroupStatus defines the observed state of RunnerGroup.
 type RunnerGroupStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// ActiveRunners is the current number of running jobs
+	ActiveRunners int `json:"activeRunners"`
+
+	// LastCheckTime is the timestamp of the last poll to Gitea
+	// +optional
+	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
