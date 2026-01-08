@@ -39,6 +39,7 @@ import (
 
 	giteav1alpha1 "github.com/bapung/gitea-runner-operator/api/v1alpha1"
 	"github.com/bapung/gitea-runner-operator/internal/controller"
+	"github.com/bapung/gitea-runner-operator/internal/gitea"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -203,8 +204,9 @@ func main() {
 	}
 
 	if err := (&controller.RunnerGroupReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		GiteaClient: gitea.NewHTTPClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RunnerGroup")
 		os.Exit(1)
