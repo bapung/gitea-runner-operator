@@ -153,7 +153,7 @@ func (c *HTTPClient) getQueuedRunsGlobal(ctx context.Context, giteaURL, authToke
 // fetchWorkflowJobs fetches workflow jobs from a given endpoint with label filtering and pagination
 func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string) (int, error) {
 	totalCount := 0
-	statuses := []string{"5"} // 5 = waiting/queued in Gitea internal ID
+	statuses := []string{"queued", "waiting", "pending"}
 
 	for _, status := range statuses {
 		page := 1
@@ -170,6 +170,8 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 			q.Set("limit", fmt.Sprintf("%d", limit))
 			u.RawQuery = q.Encode()
 
+			fmt.Printf("DEBUG: Fetching jobs from %s\n", u.String())
+
 			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 			if err != nil {
 				return 0, err
@@ -180,24 +182,34 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 
 			resp, err := c.httpClient.Do(req)
 			if err != nil {
+				fmt.Printf("DEBUG: Request failed: %v\n", err)
 				return 0, err
 			}
+
+			fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
 
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
+				fmt.Printf("DEBUG: Error body: %s\n", string(body))
 				return 0, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
 			}
 
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
 			var result ActionWorkflowJobsResponse
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				resp.Body.Close()
+			if err := json.Unmarshal(body, &result); err != nil {
+				fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 				return 0, err
 			}
-			resp.Body.Close()
+
+			fmt.Printf("DEBUG: Found %d jobs, total in Gitea: %d\n", len(result.Jobs), result.TotalCount)
 
 			// Filter and count matching jobs for this page
 			pageCount := c.filterQueuedJobs(result.Jobs, labels)
+			fmt.Printf("DEBUG: %d jobs matched labels %v\n", pageCount, labels)
 			totalCount += pageCount
 
 			// Break if we've fetched all available results
@@ -223,6 +235,8 @@ func (c *HTTPClient) fetchWorkflowRuns(ctx context.Context, endpoint, authToken 
 	q.Set("status", "queued")
 	u.RawQuery = q.Encode()
 
+	fmt.Printf("DEBUG: Fetching runs from %s\n", u.String())
+
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -233,17 +247,25 @@ func (c *HTTPClient) fetchWorkflowRuns(ctx context.Context, endpoint, authToken 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		fmt.Printf("DEBUG: Request failed: %v\n", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("DEBUG: Error body: %s\n", string(body))
 		return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow runs")
 	}
 
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
 	var result ActionWorkflowRunsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 		return nil, err
 	}
 
@@ -267,6 +289,8 @@ func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org
 		q.Set("limit", fmt.Sprintf("%d", limit))
 		u.RawQuery = q.Encode()
 
+		fmt.Printf("DEBUG: Fetching org repos from %s\n", u.String())
+
 		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 		if err != nil {
 			return nil, err
@@ -277,21 +301,28 @@ func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			fmt.Printf("DEBUG: Request failed: %v\n", err)
 			return nil, err
 		}
+
+		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			fmt.Printf("DEBUG: Error body: %s\n", string(body))
 			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user repos")
 		}
 
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
 		var repos []Repository
-		if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(body, &repos); err != nil {
+			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 			return nil, err
 		}
-		resp.Body.Close()
 
 		allRepos = append(allRepos, repos...)
 
@@ -322,6 +353,8 @@ func (c *HTTPClient) fetchAllOrgs(ctx context.Context, giteaURL, authToken strin
 		q.Set("limit", fmt.Sprintf("%d", limit))
 		u.RawQuery = q.Encode()
 
+		fmt.Printf("DEBUG: Fetching all orgs from %s\n", u.String())
+
 		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 		if err != nil {
 			return nil, err
@@ -332,21 +365,28 @@ func (c *HTTPClient) fetchAllOrgs(ctx context.Context, giteaURL, authToken strin
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			fmt.Printf("DEBUG: Request failed: %v\n", err)
 			return nil, err
 		}
+
+		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			fmt.Printf("DEBUG: Error body: %s\n", string(body))
 			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch org repos")
 		}
 
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
 		var orgs []Organization
-		if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(body, &orgs); err != nil {
+			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 			return nil, err
 		}
-		resp.Body.Close()
 
 		allOrgs = append(allOrgs, orgs...)
 
@@ -377,6 +417,8 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 		q.Set("limit", fmt.Sprintf("%d", limit))
 		u.RawQuery = q.Encode()
 
+		fmt.Printf("DEBUG: Fetching user repos from %s\n", u.String())
+
 		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 		if err != nil {
 			return nil, err
@@ -387,21 +429,28 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			fmt.Printf("DEBUG: Request failed: %v\n", err)
 			return nil, err
 		}
+
+		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			fmt.Printf("DEBUG: Error body: %s\n", string(body))
 			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user orgs")
 		}
 
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
 		var repos []Repository
-		if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(body, &repos); err != nil {
+			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 			return nil, err
 		}
-		resp.Body.Close()
 
 		allRepos = append(allRepos, repos...)
 
@@ -424,7 +473,9 @@ func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, requiredLabels [
 
 	count := 0
 	for _, job := range jobs {
-		if c.jobMatchesLabels(job.Labels, requiredLabels) {
+		match := c.jobMatchesLabels(job.Labels, requiredLabels)
+		fmt.Printf("DEBUG: Job %d (Status: %s, Labels: %v) matches requirements %v? %v\n", job.ID, job.Status, job.Labels, requiredLabels, match)
+		if match {
 			count++
 		}
 	}

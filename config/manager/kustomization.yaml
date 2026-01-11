@@ -5,7 +5,7 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/bapung/gitea-runner-operator
-  newTag: sha-0136f0e
+  newTag: sha-00496f8
 
 patchesStrategicMerge:
 - image_pull_secret_patch.yaml
