@@ -173,7 +173,7 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 		for {
 			u, err := url.Parse(endpoint)
 			if err != nil {
-				return 0, err
+				return nil, err
 			}
 			q := u.Query()
 			q.Set("status", status)
