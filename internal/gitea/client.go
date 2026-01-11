@@ -153,56 +153,60 @@ func (c *HTTPClient) getQueuedRunsGlobal(ctx context.Context, giteaURL, authToke
 // fetchWorkflowJobs fetches workflow jobs from a given endpoint with label filtering and pagination
 func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string) (int, error) {
 	totalCount := 0
-	page := 1
-	limit := 50 // Default page size
+	statuses := []string{"queued", "waiting", "pending"}
 
-	for {
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return 0, err
-		}
-		q := u.Query()
-		q.Set("status", "queued")
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
+	for _, status := range statuses {
+		page := 1
+		limit := 50 // Default page size
 
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return 0, err
-		}
+		for {
+			u, err := url.Parse(endpoint)
+			if err != nil {
+				return 0, err
+			}
+			q := u.Query()
+			q.Set("status", status)
+			q.Set("page", fmt.Sprintf("%d", page))
+			q.Set("limit", fmt.Sprintf("%d", limit))
+			u.RawQuery = q.Encode()
 
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
+			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+			if err != nil {
+				return 0, err
+			}
 
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return 0, err
-		}
+			req.Header.Set("Authorization", "token "+authToken)
+			req.Header.Set("Accept", "application/json")
 
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return 0, err
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				return 0, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
+			}
+
+			var result ActionWorkflowJobsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				resp.Body.Close()
+				return 0, err
+			}
 			resp.Body.Close()
-			return 0, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
+
+			// Filter and count matching jobs for this page
+			pageCount := c.filterQueuedJobs(result.Jobs, labels)
+			totalCount += pageCount
+
+			// Break if we've fetched all available results
+			if len(result.Jobs) < limit {
+				break
+			}
+
+			page++
 		}
-
-		var result ActionWorkflowJobsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			resp.Body.Close()
-			return 0, err
-		}
-		resp.Body.Close()
-
-		// Filter and count matching jobs for this page
-		pageCount := c.filterQueuedJobs(result.Jobs, labels)
-		totalCount += pageCount
-
-		// Break if we've fetched all available results
-		if len(result.Jobs) < limit {
-			break
-		}
-
-		page++
 	}
 
 	return totalCount, nil
