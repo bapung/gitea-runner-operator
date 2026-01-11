@@ -31,9 +31,8 @@ import (
 
 // Client defines the interface for interacting with Gitea API
 type Client interface {
-	// GetQueuedRuns queries Gitea for queued workflow runs matching the scope and labels
-	// Returns the count of queued jobs that match the criteria
-	GetQueuedRuns(
+	// GetRunnerStats queries Gitea for queued workflow runs matching the scope and labels
+	GetRunnerStats(
 		ctx context.Context,
 		giteaURL string,
 		authToken string,
@@ -41,7 +40,12 @@ type Client interface {
 		org string,
 		repo string,
 		labels []string,
-	) (int, error)
+	) (*RunnerStats, error)
+}
+
+// RunnerStats contains lists of jobs in different states
+type RunnerStats struct {
+	QueuedJobs []ActionWorkflowJob
 }
 
 // HTTPClient is the default implementation of the Gitea Client interface
@@ -107,8 +111,8 @@ type ActionWorkflowJob struct {
 	RunnerName string   `json:"runner_name"`
 }
 
-// GetQueuedRuns implements the Client interface
-func (c *HTTPClient) GetQueuedRuns(
+// GetRunnerStats implements the Client interface
+func (c *HTTPClient) GetRunnerStats(
 	ctx context.Context,
 	giteaURL string,
 	authToken string,
@@ -116,44 +120,51 @@ func (c *HTTPClient) GetQueuedRuns(
 	org string,
 	repo string,
 	labels []string,
-) (int, error) {
+) (*RunnerStats, error) {
 	switch scope {
 	case v1alpha1.RunnerGroupScopeRepo:
-		return c.getQueuedRunsForRepo(ctx, giteaURL, authToken, org, repo, labels)
+		return c.getRunnerStatsForRepo(ctx, giteaURL, authToken, org, repo, labels)
 	case v1alpha1.RunnerGroupScopeOrg:
-		return c.getQueuedRunsForOrg(ctx, giteaURL, authToken, org, labels)
+		return c.getRunnerStatsForOrg(ctx, giteaURL, authToken, org, labels)
 	case v1alpha1.RunnerGroupScopeGlobal:
-		return c.getQueuedRunsGlobal(ctx, giteaURL, authToken, labels)
+		return c.getRunnerStatsGlobal(ctx, giteaURL, authToken, labels)
 	default:
-		return 0, fmt.Errorf("unknown scope: %s", scope)
+		return nil, fmt.Errorf("unknown scope: %s", scope)
 	}
 }
 
-// getQueuedRunsForRepo fetches queued runs for a specific repository
-func (c *HTTPClient) getQueuedRunsForRepo(ctx context.Context, giteaURL, authToken, owner, repo string, labels []string) (int, error) {
-	// Use jobs endpoint since it contains the runner labels we need for filtering
+// getRunnerStatsForRepo fetches queued runs for a specific repository
+func (c *HTTPClient) getRunnerStatsForRepo(ctx context.Context, giteaURL, authToken, owner, repo string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), owner, repo)
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
 }
 
-// getQueuedRunsForOrg fetches queued runs for all repos under an organization
-func (c *HTTPClient) getQueuedRunsForOrg(ctx context.Context, giteaURL, authToken, org string, labels []string) (int, error) {
-	// Use direct org-level jobs endpoint for better performance
+// getRunnerStatsForOrg fetches queued runs for all repos under an organization
+func (c *HTTPClient) getRunnerStatsForOrg(ctx context.Context, giteaURL, authToken, org string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/orgs/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), org)
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
 }
 
-// getQueuedRunsGlobal fetches queued runs using admin-level API for global scope
-func (c *HTTPClient) getQueuedRunsGlobal(ctx context.Context, giteaURL, authToken string, labels []string) (int, error) {
-	// Use admin-level jobs endpoint which provides global view of all queued jobs
+// getRunnerStatsGlobal fetches queued runs using admin-level API for global scope
+func (c *HTTPClient) getRunnerStatsGlobal(ctx context.Context, giteaURL, authToken string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/admin/actions/jobs", strings.TrimSuffix(giteaURL, "/"))
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
+}
+
+func (c *HTTPClient) fetchRunnerStats(ctx context.Context, endpoint, authToken string, labels []string) (*RunnerStats, error) {
+	queuedJobs, err := c.fetchWorkflowJobs(ctx, endpoint, authToken, labels, []string{"queued", "waiting", "pending"})
+	if err != nil {
+		return nil, err
+	}
+
+	return &RunnerStats{
+		QueuedJobs: queuedJobs,
+	}, nil
 }
 
 // fetchWorkflowJobs fetches workflow jobs from a given endpoint with label filtering and pagination
-func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string) (int, error) {
-	totalCount := 0
-	statuses := []string{"queued", "waiting", "pending"}
+func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string, statuses []string) ([]ActionWorkflowJob, error) {
+	var allJobs []ActionWorkflowJob
 
 	for _, status := range statuses {
 		page := 1
@@ -174,7 +185,7 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 
 			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 			if err != nil {
-				return 0, err
+				return nil, err
 			}
 
 			req.Header.Set("Authorization", "token "+authToken)
@@ -183,7 +194,7 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 			resp, err := c.httpClient.Do(req)
 			if err != nil {
 				fmt.Printf("DEBUG: Request failed: %v\n", err)
-				return 0, err
+				return nil, err
 			}
 
 			fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
@@ -192,7 +203,7 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				fmt.Printf("DEBUG: Error body: %s\n", string(body))
-				return 0, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
+				return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
 			}
 
 			body, _ := io.ReadAll(resp.Body)
@@ -202,15 +213,15 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 			var result ActionWorkflowJobsResponse
 			if err := json.Unmarshal(body, &result); err != nil {
 				fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
-				return 0, err
+				return nil, err
 			}
 
 			fmt.Printf("DEBUG: Found %d jobs, total in Gitea: %d\n", len(result.Jobs), result.TotalCount)
 
-			// Filter and count matching jobs for this page
-			pageCount := c.filterQueuedJobs(result.Jobs, labels)
-			fmt.Printf("DEBUG: %d jobs matched labels %v\n", pageCount, labels)
-			totalCount += pageCount
+			// Filter and collect matching jobs for this page
+			matchedJobs := c.filterQueuedJobs(result.Jobs, labels)
+			fmt.Printf("DEBUG: %d jobs matched labels %v\n", len(matchedJobs), labels)
+			allJobs = append(allJobs, matchedJobs...)
 
 			// Break if we've fetched all available results
 			if len(result.Jobs) < limit {
@@ -221,7 +232,7 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 		}
 	}
 
-	return totalCount, nil
+	return allJobs, nil
 }
 
 // fetchWorkflowRuns fetches workflow runs from a given endpoint (deprecated - use jobs for label filtering)
@@ -465,16 +476,16 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 }
 
 // filterQueuedJobs filters workflow jobs by labels
-func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, runnerLabels []string) int {
-	count := 0
+func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, runnerLabels []string) []ActionWorkflowJob {
+	var matched []ActionWorkflowJob
 	for _, job := range jobs {
 		match := c.jobMatchesLabels(job.Labels, runnerLabels)
 		fmt.Printf("DEBUG: Job %d (Status: %s, Labels: %v) matches runner capabilities %v? %v\n", job.ID, job.Status, job.Labels, runnerLabels, match)
 		if match {
-			count++
+			matched = append(matched, job)
 		}
 	}
-	return count
+	return matched
 }
 
 // jobMatchesLabels checks if a job's requirements are satisfied by the runner's supported labels
