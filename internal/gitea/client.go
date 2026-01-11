@@ -153,7 +153,7 @@ func (c *HTTPClient) getQueuedRunsGlobal(ctx context.Context, giteaURL, authToke
 // fetchWorkflowJobs fetches workflow jobs from a given endpoint with label filtering and pagination
 func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string) (int, error) {
 	totalCount := 0
-	statuses := []string{"queued", "waiting", "pending"}
+	statuses := []string{"5"} // 5 = waiting/queued in Gitea internal ID
 
 	for _, status := range statuses {
 		page := 1
