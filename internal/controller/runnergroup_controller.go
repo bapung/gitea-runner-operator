@@ -67,6 +67,8 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("Reconciling RunnerGroup", "name", runnerGroup.Name, "namespace", runnerGroup.Namespace)
+
 	// 2. List Jobs owned by this RunnerGroup
 	jobList := &batchv1.JobList{}
 	labelSelector := client.MatchingLabels{
@@ -95,6 +97,8 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("Checked active runners", "active", activeRunners, "max", runnerGroup.Spec.MaxActiveRunners)
+
 	// 4. Capacity Check
 	if activeRunners >= runnerGroup.Spec.MaxActiveRunners {
 		logger.Info("Max active runners reached, skipping scaling",
@@ -111,6 +115,8 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("Checking Gitea for queued jobs", "url", runnerGroup.Spec.GiteaURL, "scope", runnerGroup.Spec.Scope)
+
 	// Query for queued workflow runs
 	queuedJobs, err := r.GiteaClient.GetQueuedRuns(
 		ctx,
@@ -125,6 +131,8 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.Error(err, "Failed to query Gitea for queued runs")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 	}
+
+	logger.Info("Gitea query result", "queuedJobs", queuedJobs)
 
 	// 6. Scale Up
 	availableSlots := runnerGroup.Spec.MaxActiveRunners - activeRunners
