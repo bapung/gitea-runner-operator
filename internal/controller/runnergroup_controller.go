@@ -117,6 +117,9 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("Checking Gitea for queued jobs", "url", runnerGroup.Spec.GiteaURL, "scope", runnerGroup.Spec.Scope)
 
+	// Calculate effective labels (spec labels + defaults)
+	effectiveLabels := r.getEffectiveLabels(runnerGroup.Spec.Labels)
+
 	// Query for queued workflow runs
 	queuedJobs, err := r.GiteaClient.GetQueuedRuns(
 		ctx,
@@ -125,7 +128,7 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		runnerGroup.Spec.Scope,
 		runnerGroup.Spec.Org,
 		runnerGroup.Spec.Repo,
-		runnerGroup.Spec.Labels,
+		effectiveLabels,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to query Gitea for queued runs")
@@ -153,7 +156,7 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// Spawn jobs
 		for i := 0; i < toSpawn; i++ {
-			job, err := r.constructJobForRunnerGroup(runnerGroup, registrationToken)
+			job, err := r.constructJobForRunnerGroup(runnerGroup, registrationToken, effectiveLabels)
 			if err != nil {
 				logger.Error(err, "Failed to construct Job")
 				return ctrl.Result{}, err
@@ -191,8 +194,43 @@ func (r *RunnerGroupReconciler) getSecretValue(ctx context.Context, namespace st
 	return string(value), nil
 }
 
+// getEffectiveLabels merges spec labels with default labels
+func (r *RunnerGroupReconciler) getEffectiveLabels(specLabels []string) []string {
+	defaultLabels := []string{
+		"ubuntu-latest:docker://node:16-bullseye",
+		"ubuntu-22.04:docker://node:16-bullseye",
+		"ubuntu-20.04:docker://node:16-bullseye",
+		"ubuntu-18.04:docker://node:16-buster",
+	}
+
+	effectiveLabels := make([]string, len(specLabels))
+	copy(effectiveLabels, specLabels)
+
+	for _, defaultLabel := range defaultLabels {
+		// Check if this default label key is already overridden in specLabels
+		// defaultLabel format is "key:schema"
+		parts := strings.SplitN(defaultLabel, ":", 2)
+		key := parts[0]
+
+		found := false
+		for _, specLabel := range specLabels {
+			// Spec label can be "key" or "key:schema"
+			if specLabel == key || strings.HasPrefix(specLabel, key+":") {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			effectiveLabels = append(effectiveLabels, defaultLabel)
+		}
+	}
+
+	return effectiveLabels
+}
+
 // constructJobForRunnerGroup creates a Job object for the RunnerGroup
-func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1alpha1.RunnerGroup, registrationToken string) (*batchv1.Job, error) {
+func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1alpha1.RunnerGroup, registrationToken string, labels []string) (*batchv1.Job, error) {
 	// Generate random suffix for name
 	name := fmt.Sprintf("%s-%s", runnerGroup.Name, randString(8))
 
@@ -206,8 +244,8 @@ func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1a
 		{Name: "DOCKER_TLS_VERIFY", Value: "1"},
 	}
 
-	if len(runnerGroup.Spec.Labels) > 0 {
-		labelsStr := strings.Join(runnerGroup.Spec.Labels, ",")
+	if len(labels) > 0 {
+		labelsStr := strings.Join(labels, ",")
 		envVars = append(envVars, corev1.EnvVar{Name: "GITEA_RUNNER_LABELS", Value: labelsStr})
 	}
 

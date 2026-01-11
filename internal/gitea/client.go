@@ -465,16 +465,11 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 }
 
 // filterQueuedJobs filters workflow jobs by labels
-func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, requiredLabels []string) int {
-	if len(requiredLabels) == 0 {
-		// No label filtering required, return all queued jobs
-		return len(jobs)
-	}
-
+func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, runnerLabels []string) int {
 	count := 0
 	for _, job := range jobs {
-		match := c.jobMatchesLabels(job.Labels, requiredLabels)
-		fmt.Printf("DEBUG: Job %d (Status: %s, Labels: %v) matches requirements %v? %v\n", job.ID, job.Status, job.Labels, requiredLabels, match)
+		match := c.jobMatchesLabels(job.Labels, runnerLabels)
+		fmt.Printf("DEBUG: Job %d (Status: %s, Labels: %v) matches runner capabilities %v? %v\n", job.ID, job.Status, job.Labels, runnerLabels, match)
 		if match {
 			count++
 		}
@@ -482,17 +477,24 @@ func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, requiredLabels [
 	return count
 }
 
-// jobMatchesLabels checks if a job's labels match the required labels
-func (c *HTTPClient) jobMatchesLabels(jobLabels, requiredLabels []string) bool {
-	// Convert job labels to map for faster lookup
-	labelSet := make(map[string]bool)
-	for _, label := range jobLabels {
-		labelSet[label] = true
+// jobMatchesLabels checks if a job's requirements are satisfied by the runner's supported labels
+func (c *HTTPClient) jobMatchesLabels(jobLabels, supportedLabels []string) bool {
+	if len(jobLabels) == 0 {
+		return true
 	}
 
-	// Check if all required labels are present
-	for _, required := range requiredLabels {
-		if !labelSet[required] {
+	// For each label required by the job, check if the runner supports it
+	for _, req := range jobLabels {
+		found := false
+		for _, supp := range supportedLabels {
+			// Check for exact match or schema match (label:schema)
+			// e.g. Job asks for "ubuntu-latest", Runner has "ubuntu-latest:docker://..."
+			if req == supp || strings.HasPrefix(supp, req+":") {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}
