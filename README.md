@@ -176,6 +176,8 @@ spec:
 
 ### Docker Daemon Issues
 
+This is a default rootless Job template from Gitea doc, it has issues with docker daemon. I still can't to get it working with `docker` command, other container works just fine if you put correct labels.
+Per Gemini:
 The default runner image uses `dind-rootless`. This requires the pod to run with `privileged: true`. Ensure your cluster policies (PSP/PSA) allow privileged pods in the operator namespace.
 
 ## Roadmap / Wishlist
