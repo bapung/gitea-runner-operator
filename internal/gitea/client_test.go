@@ -121,7 +121,7 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 							FullName: tt.user + "/testrepo",
 						},
 					}
-					json.NewEncoder(w).Encode(repos)
+					_ = json.NewEncoder(w).Encode(repos)
 					return
 				}
 
@@ -150,9 +150,9 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 
 				// Only return jobs for 'queued' status to simplify counting
 				if r.URL.Query().Get("status") == "queued" {
-					json.NewEncoder(w).Encode(tt.mockResponse)
+					_ = json.NewEncoder(w).Encode(tt.mockResponse)
 				} else {
-					json.NewEncoder(w).Encode(ActionWorkflowJobsResponse{TotalCount: 0, Jobs: []ActionWorkflowJob{}})
+					_ = json.NewEncoder(w).Encode(ActionWorkflowJobsResponse{TotalCount: 0, Jobs: []ActionWorkflowJob{}})
 				}
 			}))
 			defer server.Close()

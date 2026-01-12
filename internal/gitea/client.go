@@ -227,13 +227,13 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				fmt.Printf("DEBUG: Error body: %s\n", string(body))
 				return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
 			}
 
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			fmt.Printf("DEBUG: Response body: %s\n", string(body))
 
 			var result ActionWorkflowJobsResponse
@@ -259,246 +259,6 @@ func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken 
 	}
 
 	return allJobs, nil
-}
-
-// fetchWorkflowRuns fetches workflow runs from a given endpoint (deprecated - use jobs for label filtering)
-func (c *HTTPClient) fetchWorkflowRuns(ctx context.Context, endpoint, authToken string) ([]ActionWorkflowRun, error) {
-	// Add status=queued query parameter
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
-	q.Set("status", "queued")
-	u.RawQuery = q.Encode()
-
-	fmt.Printf("DEBUG: Fetching runs from %s\n", u.String())
-
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "token "+authToken)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		fmt.Printf("DEBUG: Request failed: %v\n", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("DEBUG: Error body: %s\n", string(body))
-		return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow runs")
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("DEBUG: Response body: %s\n", string(body))
-
-	var result ActionWorkflowRunsResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
-		return nil, err
-	}
-
-	return result.WorkflowRuns, nil
-}
-
-// fetchOrgRepos fetches all repositories under an organization with pagination
-func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org string) ([]Repository, error) {
-	var allRepos []Repository
-	page := 1
-	limit := 50
-
-	for {
-		endpoint := fmt.Sprintf("%s/api/v1/orgs/%s/repos", strings.TrimSuffix(giteaURL, "/"), org)
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
-
-		fmt.Printf("DEBUG: Fetching org repos from %s\n", u.String())
-
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			fmt.Printf("DEBUG: Request failed: %v\n", err)
-			return nil, err
-		}
-
-		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			fmt.Printf("DEBUG: Error body: %s\n", string(body))
-			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user repos")
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		fmt.Printf("DEBUG: Response body: %s\n", string(body))
-
-		var repos []Repository
-		if err := json.Unmarshal(body, &repos); err != nil {
-			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
-			return nil, err
-		}
-
-		allRepos = append(allRepos, repos...)
-
-		if len(repos) < limit {
-			break
-		}
-
-		page++
-	}
-
-	return allRepos, nil
-}
-
-// fetchAllOrgs fetches all organizations visible to the authenticated user with pagination
-func (c *HTTPClient) fetchAllOrgs(ctx context.Context, giteaURL, authToken string) ([]Organization, error) {
-	var allOrgs []Organization
-	page := 1
-	limit := 50
-
-	for {
-		endpoint := fmt.Sprintf("%s/api/v1/user/orgs", strings.TrimSuffix(giteaURL, "/"))
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
-
-		fmt.Printf("DEBUG: Fetching all orgs from %s\n", u.String())
-
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			fmt.Printf("DEBUG: Request failed: %v\n", err)
-			return nil, err
-		}
-
-		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			fmt.Printf("DEBUG: Error body: %s\n", string(body))
-			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch org repos")
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		fmt.Printf("DEBUG: Response body: %s\n", string(body))
-
-		var orgs []Organization
-		if err := json.Unmarshal(body, &orgs); err != nil {
-			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
-			return nil, err
-		}
-
-		allOrgs = append(allOrgs, orgs...)
-
-		if len(orgs) < limit {
-			break
-		}
-
-		page++
-	}
-
-	return allOrgs, nil
-}
-
-// fetchUserRepos fetches all repositories owned by the authenticated user with pagination
-func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken string) ([]Repository, error) {
-	var allRepos []Repository
-	page := 1
-	limit := 50
-
-	for {
-		endpoint := fmt.Sprintf("%s/api/v1/user/repos", strings.TrimSuffix(giteaURL, "/"))
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
-
-		fmt.Printf("DEBUG: Fetching user repos from %s\n", u.String())
-
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			fmt.Printf("DEBUG: Request failed: %v\n", err)
-			return nil, err
-		}
-
-		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			fmt.Printf("DEBUG: Error body: %s\n", string(body))
-			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user orgs")
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		fmt.Printf("DEBUG: Response body: %s\n", string(body))
-
-		var repos []Repository
-		if err := json.Unmarshal(body, &repos); err != nil {
-			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
-			return nil, err
-		}
-
-		allRepos = append(allRepos, repos...)
-
-		if len(repos) < limit {
-			break
-		}
-
-		page++
-	}
-
-	return allRepos, nil
 }
 
 // fetchReposForUser fetches all repositories owned by a specific user with pagination
@@ -538,13 +298,13 @@ func (c *HTTPClient) fetchReposForUser(ctx context.Context, giteaURL, authToken,
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			fmt.Printf("DEBUG: Error body: %s\n", string(body))
 			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user repos")
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		// fmt.Printf("DEBUG: Response body: %s\n", string(body))
 
 		var repos []Repository
@@ -600,12 +360,6 @@ func (c *HTTPClient) jobMatchesLabels(jobLabels, supportedLabels []string) bool 
 		}
 	}
 	return true
-}
-
-// filterQueuedRuns filters workflow runs by labels (deprecated - use filterQueuedJobs)
-func (c *HTTPClient) filterQueuedRuns(runs []ActionWorkflowRun, labels []string) int {
-	// Legacy method - jobs should be used for label filtering
-	return len(runs)
 }
 
 // handleHTTPError provides specific error handling for different HTTP status codes

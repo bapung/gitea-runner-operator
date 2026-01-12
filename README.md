@@ -1,6 +1,6 @@
 # Gitea Runner Operator
 
-A Kubernetes Operator to manage ephemeral Gitea Act runners. This operator automatically spawns runner pods based on the demand of queued jobs in your Gitea instance, ensuring efficient resource usage and isolation.
+A Kubernetes Operator to manage ephemeral Gitea Act runners. This operator automatically spawns runner pods based on queued jobs, support global, org/user, repo level runner. Definetely-vibe-coded (don't worry i know what i am doing).
 
 ## Features
 

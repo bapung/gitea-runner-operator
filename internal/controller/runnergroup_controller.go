@@ -351,14 +351,6 @@ func randString(length int) string {
 	return string(b)
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *RunnerGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
