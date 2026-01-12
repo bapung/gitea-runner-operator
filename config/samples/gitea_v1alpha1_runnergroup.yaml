@@ -24,8 +24,8 @@ spec:
 
   # Scope of the runners (global, org, or repo)
   scope: "org"
-  org: "bapung" # Required if scope is 'org' or 'repo'
-  user: "" # Required if scope is 'user' or 'repo'
+  #org: "bapungorg" # Required if scope is 'org' or 'repo'; cannot be used with user
+  user: "bapung" # Required if scope is 'user' or 'repo'; cannot be used with org
   #repo: "dummy-service-workflow" # Required if scope is 'repo'
 
   # Labels to identify this runner group

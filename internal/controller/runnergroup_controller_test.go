@@ -25,10 +25,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	giteav1alpha1 "github.com/bapung/gitea-runner-operator/api/v1alpha1"
+	"github.com/bapung/gitea-runner-operator/internal/gitea"
 )
+
+type fakeGiteaClient struct{}
+
+func (c *fakeGiteaClient) GetRunnerStats(ctx context.Context, giteaURL, authToken string, scope giteav1alpha1.RunnerGroupScope, org string, user string, repo string, labels []string) (*gitea.RunnerStats, error) {
+	return &gitea.RunnerStats{QueuedJobs: []gitea.ActionWorkflowJob{}}, nil
+}
 
 var _ = Describe("RunnerGroup Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -43,6 +51,21 @@ var _ = Describe("RunnerGroup Controller", func() {
 		runnergroup := &giteav1alpha1.RunnerGroup{}
 
 		BeforeEach(func() {
+			By("creating the secret")
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gitea-secret",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"token": []byte("dummy"),
+					"auth":  []byte("dummy"),
+				},
+			}
+			if err := k8sClient.Create(ctx, secret); err != nil && !errors.IsAlreadyExists(err) {
+				Expect(err).To(Succeed())
+			}
+
 			By("creating the custom resource for the Kind RunnerGroup")
 			err := k8sClient.Get(ctx, typeNamespacedName, runnergroup)
 			if err != nil && errors.IsNotFound(err) {
@@ -51,7 +74,19 @@ var _ = Describe("RunnerGroup Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: giteav1alpha1.RunnerGroupSpec{
+						Scope:            giteav1alpha1.RunnerGroupScopeGlobal,
+						GiteaURL:         "https://gitea.example.com",
+						MaxActiveRunners: 1,
+						RegistrationTokenRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "gitea-secret"},
+							Key:                  "token",
+						},
+						AuthTokenRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "gitea-secret"},
+							Key:                  "auth",
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -69,8 +104,9 @@ var _ = Describe("RunnerGroup Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &RunnerGroupReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				GiteaClient: &fakeGiteaClient{},
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{

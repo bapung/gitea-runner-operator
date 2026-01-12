@@ -1,83 +1,185 @@
-# Overview
+# Gitea Runner Operator
 
-Operator to manage gitea Act runner on Kubernetes
+A Kubernetes Operator to manage ephemeral Gitea Act runners. This operator automatically spawns runner pods based on the demand of queued jobs in your Gitea instance, ensuring efficient resource usage and isolation.
 
-# How it works?
+## Features
 
-1. It installs a set of CRDs: `kind: RunnerGroup` in Kubernetes
+- **Ephemeral Runners**: Each job gets a fresh runner which is destroyed after execution.
+- **Multiple Scopes**: Support for `global`, `org`, `user`, and `repo` level runners.
+- **Auto-Scaling**: Automatically scales runners up to a configured maximum based on queued jobs.
+- **Label Matching**: matches Gitea job labels (e.g., `ubuntu-latest`) to runner capabilities.
+
+## Prerequisites
+
+- **Kubernetes Cluster**: v1.23+
+- **Gitea**: v1.25.0+ (with Actions enabled)
+
+## Installation (Helm Chart)
+
+### Incoming
+
+## Installation (Manual)
+
+### 1. Deploy the Operator
+
+You can deploy the operator using the provided manifests.
+
+```bash
+# Clone the repository
+git clone https://github.com/bapung/gitea-runner-operator.git
+cd gitea-runner-operator
+
+# Install CRDs
+make install
+
+# Deploy the controller to the cluster
+make deploy IMG=ghcr.io/bapung/gitea-runner-operator:latest
+```
+
+### 2. Create Credentials Secret
+
+Create a secret containing the Gitea Registration Token and an API Auth Token.
+
+1.  **Registration Token**: Get this from Gitea Admin -> Actions -> Runners -> Create new Runner (or Org/Repo settings).
+2.  **Auth Token**: Generate a token in Gitea User Settings -> Applications. It needs `read:repository`, `read:user` permissions.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-runner-secret
+  namespace: gitea-runner-operator-system
+type: Opaque
+stringData:
+  registrationToken: "<YOUR_REGISTRATION_TOKEN>"
+  authToken: "<YOUR_API_TOKEN>"
+```
+
+Apply it:
+
+```bash
+kubectl apply -f secret.yaml
+```
+
+## Configuration
+
+The core resource is the `RunnerGroup`. Below are examples for different scopes.
+
+### 1. Repository Scope
+
+Spawns runners only for jobs in a specific repository.
 
 ```yaml
 apiVersion: gitea.bpg.pw/v1alpha1
 kind: RunnerGroup
 metadata:
-  name: my-repo-runner-1
-  namespace: gitea-runner-system
+  name: my-repo-runner
+  namespace: gitea-runner-operator-system
 spec:
-  scope: repo # valid options: global, org or user, repo
-  org: myorg # optional; ommited if scope == global; mutually exclusive with user
-  user: myusername # optional; ommited if scope == global; mutually exclusive with org
-  repo: myreponame # optional; ommited if scope == org || scope == global
-  gitea:
-    url: https://gitea.bpg.pw
+  scope: repo
+  org: myorg
+  repo: myrepo
+  giteaURL: https://gitea.example.com
+  maxActiveRunners: 5
   labels:
-    - default
-    - app:infra
-  maxActiveRunners: 5 #
-  registrationToken: # registration token for runner
+    - "ubuntu-latest"
+    - "custom-label"
+  registrationToken:
     secretRef:
-      name: gitea-runner-secret-0
+      name: gitea-runner-secret
       key: registrationToken
-  authToken: # token to get list of job status
+  authToken:
     secretRef:
-      name: gitea-runner-secret-0
+      name: gitea-runner-secret
       key: authToken
 ```
 
-2. The RunnerGroup controller will continuously watch for queued jobs based on its scope: `global`, `org`, or `repo`. If a new workflow run is detected with `status: queued`, based on the RunnerGroup's labels, the controller will spawn a new ephemeral runner as a Job.
+### 2. Organization Scope
+
+Spawns runners for any repository within the organization.
 
 ```yaml
-apiVersion: batch/v1
-kind: Job
+apiVersion: gitea.bpg.pw/v1alpha1
+kind: RunnerGroup
 metadata:
-  name: my-repo-runner-1-275f1b8f
-  labels:
-    app: my-repo-runner-1
-    # tags to determine that this resource is managed by the Operator
+  name: my-org-runner
+  namespace: gitea-runner-operator-system
 spec:
-  # Optional: Automatically clean up the job after it finishes (e.g., 100 seconds)
-  ttlSecondsAfterFinished: 600
-  template:
-    metadata:
-      labels:
-        app: act-my-repo-runner-1
-    spec:
-      restartPolicy: OnFailure
-      securityContext:
-        fsGroup: 1000
-      volumes:
-        - name: runner-data
-          persistentVolumeClaim:
-            claimName: act-runner-vol
-      containers:
-        - name: runner
-          image: gitea/act_runner:nightly-dind-rootless
-          imagePullPolicy: Always
-          env:
-            - name: DOCKER_HOST
-              value: tcp://localhost:2376
-            - name: DOCKER_CERT_PATH
-              value: /certs/client
-            - name: DOCKER_TLS_VERIFY
-              value: "1"
-            - name: GITEA_INSTANCE_URL
-              value: https://gitea.bpg.pw
-            - name: GITEA_RUNNER_EPHEMERAL # always ephemeral
-              value: "1"
-            - name: GITEA_RUNNER_REGISTRATION_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: gitea-runner-secret-0
-                  key: registrationToken
-          securityContext:
-            privileged: true
+  scope: org
+  org: myorg
+  # repo is omitted
+  giteaURL: https://gitea.example.com
+  maxActiveRunners: 10
+  # ... (tokens)
 ```
+
+### 3. User Scope
+
+Spawns runners for any repository owned by the specified user.
+
+```yaml
+apiVersion: gitea.bpg.pw/v1alpha1
+kind: RunnerGroup
+metadata:
+  name: my-user-runner
+  namespace: gitea-runner-operator-system
+spec:
+  scope: user
+  user: myusername
+  # org and repo are omitted
+  giteaURL: https://gitea.example.com
+  maxActiveRunners: 3
+  # ... (tokens)
+```
+
+### 4. Global Scope
+
+Spawns runners for any job in the Gitea instance (Admin level).
+
+```yaml
+apiVersion: gitea.bpg.pw/v1alpha1
+kind: RunnerGroup
+metadata:
+  name: global-runner
+  namespace: gitea-runner-operator-system
+spec:
+  scope: global
+  # org, user, and repo are omitted
+  giteaURL: https://gitea.example.com
+  maxActiveRunners: 20
+  # ... (tokens)
+```
+
+## How it works
+
+1.  The **Controller** polls the Gitea API (using the `authToken`) to check for queued jobs matching the scope and labels.
+2.  If a matching queued job is found, and the current active runner count is below `maxActiveRunners`, the Controller creates a Kubernetes `Job`.
+3.  The `Job` pod starts an `act_runner` instance, registers itself using the `registrationToken` (as ephemeral), picks up the job, executes it, and then terminates.
+
+## Troubleshooting
+
+### Runners are not starting
+
+1.  **Check Controller Logs**:
+
+    ```bash
+    kubectl logs -n gitea-runner-operator-system -l control-plane=controller-manager -f
+    ```
+
+    Look for errors regarding API authentication or connectivity.
+
+2.  **Check Permissions**:
+    Ensure the `authToken` has sufficient permissions (`read:repository`, etc.) to query actions.
+
+3.  **Check Labels**:
+    Enable debug logging in the controller to see label matching logic. If your Gitea job requires `ubuntu-latest` but your RunnerGroup defines `centos`, it won't match.
+
+### Docker Daemon Issues
+
+The default runner image uses `dind-rootless`. This requires the pod to run with `privileged: true`. Ensure your cluster policies (PSP/PSA) allow privileged pods in the operator namespace.
+
+## Roadmap / Wishlist
+
+- Helm Chart
+- Custom Runner Job Spec definition
+- Push mode using Webhook trigger
