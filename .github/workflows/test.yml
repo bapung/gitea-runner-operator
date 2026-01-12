@@ -20,4 +20,4 @@ jobs:
       - name: Running Tests
         run: |
           go mod tidy
-          make test
+          make test ENVTEST_K8S_VERSION=1.31

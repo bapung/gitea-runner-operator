@@ -107,11 +107,16 @@ spec:
                 description: Repo is required if scope is 'repo'
                 type: string
               scope:
-                description: Scope defines the scope of the runner (global, org, repo)
+                description: Scope defines the scope of the runner (global, org, user,
+                  repo)
                 enum:
                 - global
                 - org
+                - user
                 - repo
+                type: string
+              user:
+                description: User is required if scope is 'user'
                 type: string
             required:
             - authToken

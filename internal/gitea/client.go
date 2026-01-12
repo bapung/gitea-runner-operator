@@ -31,17 +31,22 @@ import (
 
 // Client defines the interface for interacting with Gitea API
 type Client interface {
-	// GetQueuedRuns queries Gitea for queued workflow runs matching the scope and labels
-	// Returns the count of queued jobs that match the criteria
-	GetQueuedRuns(
+	// GetRunnerStats queries Gitea for queued workflow runs matching the scope and labels
+	GetRunnerStats(
 		ctx context.Context,
 		giteaURL string,
 		authToken string,
 		scope v1alpha1.RunnerGroupScope,
 		org string,
+		user string,
 		repo string,
 		labels []string,
-	) (int, error)
+	) (*RunnerStats, error)
+}
+
+// RunnerStats contains lists of jobs in different states
+type RunnerStats struct {
+	QueuedJobs []ActionWorkflowJob
 }
 
 // HTTPClient is the default implementation of the Gitea Client interface
@@ -107,153 +112,163 @@ type ActionWorkflowJob struct {
 	RunnerName string   `json:"runner_name"`
 }
 
-// GetQueuedRuns implements the Client interface
-func (c *HTTPClient) GetQueuedRuns(
+// GetRunnerStats implements the Client interface
+func (c *HTTPClient) GetRunnerStats(
 	ctx context.Context,
 	giteaURL string,
 	authToken string,
 	scope v1alpha1.RunnerGroupScope,
 	org string,
+	user string,
 	repo string,
 	labels []string,
-) (int, error) {
+) (*RunnerStats, error) {
 	switch scope {
 	case v1alpha1.RunnerGroupScopeRepo:
-		return c.getQueuedRunsForRepo(ctx, giteaURL, authToken, org, repo, labels)
+		return c.getRunnerStatsForRepo(ctx, giteaURL, authToken, org, repo, labels)
 	case v1alpha1.RunnerGroupScopeOrg:
-		return c.getQueuedRunsForOrg(ctx, giteaURL, authToken, org, labels)
+		return c.getRunnerStatsForOrg(ctx, giteaURL, authToken, org, labels)
+	case v1alpha1.RunnerGroupScopeUser:
+		return c.getRunnerStatsForUser(ctx, giteaURL, authToken, user, labels)
 	case v1alpha1.RunnerGroupScopeGlobal:
-		return c.getQueuedRunsGlobal(ctx, giteaURL, authToken, labels)
+		return c.getRunnerStatsGlobal(ctx, giteaURL, authToken, labels)
 	default:
-		return 0, fmt.Errorf("unknown scope: %s", scope)
+		return nil, fmt.Errorf("unknown scope: %s", scope)
 	}
 }
 
-// getQueuedRunsForRepo fetches queued runs for a specific repository
-func (c *HTTPClient) getQueuedRunsForRepo(ctx context.Context, giteaURL, authToken, owner, repo string, labels []string) (int, error) {
-	// Use jobs endpoint since it contains the runner labels we need for filtering
+// getRunnerStatsForRepo fetches queued runs for a specific repository
+func (c *HTTPClient) getRunnerStatsForRepo(ctx context.Context, giteaURL, authToken, owner, repo string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), owner, repo)
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
 }
 
-// getQueuedRunsForOrg fetches queued runs for all repos under an organization
-func (c *HTTPClient) getQueuedRunsForOrg(ctx context.Context, giteaURL, authToken, org string, labels []string) (int, error) {
-	// Use direct org-level jobs endpoint for better performance
+// getRunnerStatsForOrg fetches queued runs for all repos under an organization
+func (c *HTTPClient) getRunnerStatsForOrg(ctx context.Context, giteaURL, authToken, org string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/orgs/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), org)
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
 }
 
-// getQueuedRunsGlobal fetches queued runs using admin-level API for global scope
-func (c *HTTPClient) getQueuedRunsGlobal(ctx context.Context, giteaURL, authToken string, labels []string) (int, error) {
-	// Use admin-level jobs endpoint which provides global view of all queued jobs
+// getRunnerStatsForUser fetches queued runs for all repos owned by a user
+func (c *HTTPClient) getRunnerStatsForUser(ctx context.Context, giteaURL, authToken, user string, labels []string) (*RunnerStats, error) {
+	repos, err := c.fetchReposForUser(ctx, giteaURL, authToken, user)
+	if err != nil {
+		return nil, err
+	}
+
+	var allQueuedJobs []ActionWorkflowJob
+	for _, repo := range repos {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), repo.Owner.Login, repo.Name)
+		stats, err := c.fetchRunnerStats(ctx, endpoint, authToken, labels)
+		if err != nil {
+			return nil, err
+		}
+		allQueuedJobs = append(allQueuedJobs, stats.QueuedJobs...)
+	}
+
+	return &RunnerStats{
+		QueuedJobs: allQueuedJobs,
+	}, nil
+}
+
+// getRunnerStatsGlobal fetches queued runs using admin-level API for global scope
+func (c *HTTPClient) getRunnerStatsGlobal(ctx context.Context, giteaURL, authToken string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/admin/actions/jobs", strings.TrimSuffix(giteaURL, "/"))
-	return c.fetchWorkflowJobs(ctx, endpoint, authToken, labels)
+	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
+}
+
+func (c *HTTPClient) fetchRunnerStats(ctx context.Context, endpoint, authToken string, labels []string) (*RunnerStats, error) {
+	queuedJobs, err := c.fetchWorkflowJobs(ctx, endpoint, authToken, labels, []string{"queued", "waiting", "pending"})
+	if err != nil {
+		return nil, err
+	}
+
+	return &RunnerStats{
+		QueuedJobs: queuedJobs,
+	}, nil
 }
 
 // fetchWorkflowJobs fetches workflow jobs from a given endpoint with label filtering and pagination
-func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string) (int, error) {
-	totalCount := 0
-	page := 1
-	limit := 50 // Default page size
+func (c *HTTPClient) fetchWorkflowJobs(ctx context.Context, endpoint, authToken string, labels []string, statuses []string) ([]ActionWorkflowJob, error) {
+	var allJobs []ActionWorkflowJob
 
-	for {
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return 0, err
-		}
-		q := u.Query()
-		q.Set("status", "queued")
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
+	for _, status := range statuses {
+		page := 1
+		limit := 50 // Default page size
 
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return 0, err
-		}
+		for {
+			u, err := url.Parse(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			q := u.Query()
+			q.Set("status", status)
+			q.Set("page", fmt.Sprintf("%d", page))
+			q.Set("limit", fmt.Sprintf("%d", limit))
+			u.RawQuery = q.Encode()
 
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
+			fmt.Printf("DEBUG: Fetching jobs from %s\n", u.String())
 
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return 0, err
-		}
+			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+			if err != nil {
+				return nil, err
+			}
 
-		if resp.StatusCode != http.StatusOK {
+			req.Header.Set("Authorization", "token "+authToken)
+			req.Header.Set("Accept", "application/json")
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				fmt.Printf("DEBUG: Request failed: %v\n", err)
+				return nil, err
+			}
+
+			fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				fmt.Printf("DEBUG: Error body: %s\n", string(body))
+				return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
+			}
+
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return 0, c.handleHTTPError(resp.StatusCode, body, "fetch workflow jobs")
+			_ = resp.Body.Close()
+			fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
+			var result ActionWorkflowJobsResponse
+			if err := json.Unmarshal(body, &result); err != nil {
+				fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
+				return nil, err
+			}
+
+			fmt.Printf("DEBUG: Found %d jobs, total in Gitea: %d\n", len(result.Jobs), result.TotalCount)
+
+			// Filter and collect matching jobs for this page
+			matchedJobs := c.filterQueuedJobs(result.Jobs, labels)
+			fmt.Printf("DEBUG: %d jobs matched labels %v\n", len(matchedJobs), labels)
+			allJobs = append(allJobs, matchedJobs...)
+
+			// Break if we've fetched all available results
+			if len(result.Jobs) < limit {
+				break
+			}
+
+			page++
 		}
-
-		var result ActionWorkflowJobsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			resp.Body.Close()
-			return 0, err
-		}
-		resp.Body.Close()
-
-		// Filter and count matching jobs for this page
-		pageCount := c.filterQueuedJobs(result.Jobs, labels)
-		totalCount += pageCount
-
-		// Break if we've fetched all available results
-		if len(result.Jobs) < limit {
-			break
-		}
-
-		page++
 	}
 
-	return totalCount, nil
+	return allJobs, nil
 }
 
-// fetchWorkflowRuns fetches workflow runs from a given endpoint (deprecated - use jobs for label filtering)
-func (c *HTTPClient) fetchWorkflowRuns(ctx context.Context, endpoint, authToken string) ([]ActionWorkflowRun, error) {
-	// Add status=queued query parameter
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
-	q.Set("status", "queued")
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "token "+authToken)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, c.handleHTTPError(resp.StatusCode, body, "fetch workflow runs")
-	}
-
-	var result ActionWorkflowRunsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	return result.WorkflowRuns, nil
-}
-
-// fetchOrgRepos fetches all repositories under an organization with pagination
-func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org string) ([]Repository, error) {
+// fetchReposForUser fetches all repositories owned by a specific user with pagination
+func (c *HTTPClient) fetchReposForUser(ctx context.Context, giteaURL, authToken, username string) ([]Repository, error) {
 	var allRepos []Repository
 	page := 1
 	limit := 50
 
 	for {
-		endpoint := fmt.Sprintf("%s/api/v1/orgs/%s/repos", strings.TrimSuffix(giteaURL, "/"), org)
+		endpoint := fmt.Sprintf("%s/api/v1/users/%s/repos", strings.TrimSuffix(giteaURL, "/"), username)
 		u, err := url.Parse(endpoint)
 		if err != nil {
 			return nil, err
@@ -262,6 +277,8 @@ func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org
 		q.Set("page", fmt.Sprintf("%d", page))
 		q.Set("limit", fmt.Sprintf("%d", limit))
 		u.RawQuery = q.Encode()
+
+		fmt.Printf("DEBUG: Fetching repos for user %s from %s\n", username, u.String())
 
 		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 		if err != nil {
@@ -273,131 +290,28 @@ func (c *HTTPClient) fetchOrgRepos(ctx context.Context, giteaURL, authToken, org
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			fmt.Printf("DEBUG: Request failed: %v\n", err)
 			return nil, err
 		}
 
+		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
+
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
+			fmt.Printf("DEBUG: Error body: %s\n", string(body))
 			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user repos")
 		}
 
-		var repos []Repository
-		if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-			resp.Body.Close()
-			return nil, err
-		}
-		resp.Body.Close()
-
-		allRepos = append(allRepos, repos...)
-
-		if len(repos) < limit {
-			break
-		}
-
-		page++
-	}
-
-	return allRepos, nil
-}
-
-// fetchAllOrgs fetches all organizations visible to the authenticated user with pagination
-func (c *HTTPClient) fetchAllOrgs(ctx context.Context, giteaURL, authToken string) ([]Organization, error) {
-	var allOrgs []Organization
-	page := 1
-	limit := 50
-
-	for {
-		endpoint := fmt.Sprintf("%s/api/v1/user/orgs", strings.TrimSuffix(giteaURL, "/"))
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
-
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch org repos")
-		}
-
-		var orgs []Organization
-		if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil {
-			resp.Body.Close()
-			return nil, err
-		}
-		resp.Body.Close()
-
-		allOrgs = append(allOrgs, orgs...)
-
-		if len(orgs) < limit {
-			break
-		}
-
-		page++
-	}
-
-	return allOrgs, nil
-}
-
-// fetchUserRepos fetches all repositories owned by the authenticated user with pagination
-func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken string) ([]Repository, error) {
-	var allRepos []Repository
-	page := 1
-	limit := 50
-
-	for {
-		endpoint := fmt.Sprintf("%s/api/v1/user/repos", strings.TrimSuffix(giteaURL, "/"))
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("page", fmt.Sprintf("%d", page))
-		q.Set("limit", fmt.Sprintf("%d", limit))
-		u.RawQuery = q.Encode()
-
-		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "token "+authToken)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user orgs")
-		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		// fmt.Printf("DEBUG: Response body: %s\n", string(body))
 
 		var repos []Repository
-		if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(body, &repos); err != nil {
+			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
 			return nil, err
 		}
-		resp.Body.Close()
 
 		allRepos = append(allRepos, repos...)
 
@@ -412,42 +326,40 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 }
 
 // filterQueuedJobs filters workflow jobs by labels
-func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, requiredLabels []string) int {
-	if len(requiredLabels) == 0 {
-		// No label filtering required, return all queued jobs
-		return len(jobs)
-	}
-
-	count := 0
+func (c *HTTPClient) filterQueuedJobs(jobs []ActionWorkflowJob, runnerLabels []string) []ActionWorkflowJob {
+	var matched []ActionWorkflowJob
 	for _, job := range jobs {
-		if c.jobMatchesLabels(job.Labels, requiredLabels) {
-			count++
+		match := c.jobMatchesLabels(job.Labels, runnerLabels)
+		fmt.Printf("DEBUG: Job %d (Status: %s, Labels: %v) matches runner capabilities %v? %v\n", job.ID, job.Status, job.Labels, runnerLabels, match)
+		if match {
+			matched = append(matched, job)
 		}
 	}
-	return count
+	return matched
 }
 
-// jobMatchesLabels checks if a job's labels match the required labels
-func (c *HTTPClient) jobMatchesLabels(jobLabels, requiredLabels []string) bool {
-	// Convert job labels to map for faster lookup
-	labelSet := make(map[string]bool)
-	for _, label := range jobLabels {
-		labelSet[label] = true
+// jobMatchesLabels checks if a job's requirements are satisfied by the runner's supported labels
+func (c *HTTPClient) jobMatchesLabels(jobLabels, supportedLabels []string) bool {
+	if len(jobLabels) == 0 {
+		return true
 	}
 
-	// Check if all required labels are present
-	for _, required := range requiredLabels {
-		if !labelSet[required] {
+	// For each label required by the job, check if the runner supports it
+	for _, req := range jobLabels {
+		found := false
+		for _, supp := range supportedLabels {
+			// Check for exact match or schema match (label:schema)
+			// e.g. Job asks for "ubuntu-latest", Runner has "ubuntu-latest:docker://..."
+			if req == supp || strings.HasPrefix(supp, req+":") {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}
 	return true
-}
-
-// filterQueuedRuns filters workflow runs by labels (deprecated - use filterQueuedJobs)
-func (c *HTTPClient) filterQueuedRuns(runs []ActionWorkflowRun, labels []string) int {
-	// Legacy method - jobs should be used for label filtering
-	return len(runs)
 }
 
 // handleHTTPError provides specific error handling for different HTTP status codes

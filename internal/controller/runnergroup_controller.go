@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -40,8 +41,9 @@ import (
 // RunnerGroupReconciler reconciles a RunnerGroup object
 type RunnerGroupReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	GiteaClient gitea.Client
+	Scheme           *runtime.Scheme
+	GiteaClient      gitea.Client
+	SpawnedJobsCache sync.Map
 }
 
 // +kubebuilder:rbac:groups=gitea.bpg.pw,resources=runnergroups,verbs=get;list;watch;create;update;patch;delete
@@ -117,55 +119,92 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("Checking Gitea for queued jobs", "url", runnerGroup.Spec.GiteaURL, "scope", runnerGroup.Spec.Scope)
 
+	// Calculate effective labels (spec labels + defaults)
+	effectiveLabels := r.getEffectiveLabels(runnerGroup.Spec.Labels)
+
 	// Query for queued workflow runs
-	queuedJobs, err := r.GiteaClient.GetQueuedRuns(
+	stats, err := r.GiteaClient.GetRunnerStats(
 		ctx,
 		runnerGroup.Spec.GiteaURL,
 		authToken,
 		runnerGroup.Spec.Scope,
 		runnerGroup.Spec.Org,
+		runnerGroup.Spec.User,
 		runnerGroup.Spec.Repo,
-		runnerGroup.Spec.Labels,
+		effectiveLabels,
 	)
 	if err != nil {
-		logger.Error(err, "Failed to query Gitea for queued runs")
+		logger.Error(err, "Failed to query Gitea for runner stats")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 	}
 
-	logger.Info("Gitea query result", "queuedJobs", queuedJobs)
+	logger.Info("Gitea query result", "queuedJobs", len(stats.QueuedJobs))
 
-	// 6. Scale Up
+	// 6. Scale Up and Cache Management
 	availableSlots := runnerGroup.Spec.MaxActiveRunners - activeRunners
-	toSpawn := min(queuedJobs, availableSlots)
 
-	if toSpawn > 0 {
-		logger.Info("Spawning runners",
-			"queuedJobs", queuedJobs,
-			"availableSlots", availableSlots,
-			"toSpawn", toSpawn)
+	// Track current queued IDs for cache cleanup
+	currentQueuedIDs := make(map[int64]bool)
 
-		// Retrieve Registration Token from Secret
-		registrationToken, err := r.getSecretValue(ctx, runnerGroup.Namespace, runnerGroup.Spec.RegistrationTokenRef)
+	// Retrieve Registration Token from Secret (only if we need to spawn)
+	var registrationToken string
+	tokenFetched := false
+
+	for _, giteaJob := range stats.QueuedJobs {
+		currentQueuedIDs[giteaJob.ID] = true
+
+		if availableSlots <= 0 {
+			continue
+		}
+
+		// Check if we already spawned a runner for this job
+		if value, loaded := r.SpawnedJobsCache.Load(giteaJob.ID); loaded {
+			spawnTime := value.(time.Time)
+			if time.Since(spawnTime) < 5*time.Minute {
+				// Already handling this job recently
+				continue
+			}
+			// TTL expired (runner likely failed to start), retry spawning
+			logger.Info("Job stuck in queue for too long, retrying runner spawn", "giteaJobID", giteaJob.ID)
+		}
+
+		// Need to spawn a runner
+		if !tokenFetched {
+			registrationToken, err = r.getSecretValue(ctx, runnerGroup.Namespace, runnerGroup.Spec.RegistrationTokenRef)
+			if err != nil {
+				logger.Error(err, "Failed to get registration token from secret")
+				return ctrl.Result{}, err
+			}
+			tokenFetched = true
+		}
+
+		job, err := r.constructJobForRunnerGroup(runnerGroup, registrationToken, effectiveLabels)
 		if err != nil {
-			logger.Error(err, "Failed to get registration token from secret")
+			logger.Error(err, "Failed to construct Job")
 			return ctrl.Result{}, err
 		}
 
-		// Spawn jobs
-		for i := 0; i < toSpawn; i++ {
-			job, err := r.constructJobForRunnerGroup(runnerGroup, registrationToken)
-			if err != nil {
-				logger.Error(err, "Failed to construct Job")
-				return ctrl.Result{}, err
-			}
-
-			if err := r.Create(ctx, job); err != nil {
-				logger.Error(err, "Failed to create Job", "jobName", job.Name)
-				return ctrl.Result{}, err
-			}
-			logger.Info("Created Job", "jobName", job.Name)
+		if err := r.Create(ctx, job); err != nil {
+			logger.Error(err, "Failed to create Job", "jobName", job.Name)
+			return ctrl.Result{}, err
 		}
+
+		logger.Info("Created Job for Gitea Run", "jobName", job.Name, "giteaJobID", giteaJob.ID)
+
+		// Mark as spawned
+		r.SpawnedJobsCache.Store(giteaJob.ID, time.Now())
+		availableSlots--
 	}
+
+	// Cleanup cache: remove jobs that are no longer queued in Gitea
+	r.SpawnedJobsCache.Range(func(key, value any) bool {
+		jobID := key.(int64)
+		if !currentQueuedIDs[jobID] {
+			// Job is no longer in the queue (running, completed, or cancelled)
+			r.SpawnedJobsCache.Delete(key)
+		}
+		return true
+	})
 
 	// 7. Requeue for continuous polling
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -191,8 +230,43 @@ func (r *RunnerGroupReconciler) getSecretValue(ctx context.Context, namespace st
 	return string(value), nil
 }
 
+// getEffectiveLabels merges spec labels with default labels
+func (r *RunnerGroupReconciler) getEffectiveLabels(specLabels []string) []string {
+	defaultLabels := []string{
+		"ubuntu-latest:docker://node:16-bullseye",
+		"ubuntu-22.04:docker://node:16-bullseye",
+		"ubuntu-20.04:docker://node:16-bullseye",
+		"ubuntu-18.04:docker://node:16-buster",
+	}
+
+	effectiveLabels := make([]string, len(specLabels))
+	copy(effectiveLabels, specLabels)
+
+	for _, defaultLabel := range defaultLabels {
+		// Check if this default label key is already overridden in specLabels
+		// defaultLabel format is "key:schema"
+		parts := strings.SplitN(defaultLabel, ":", 2)
+		key := parts[0]
+
+		found := false
+		for _, specLabel := range specLabels {
+			// Spec label can be "key" or "key:schema"
+			if specLabel == key || strings.HasPrefix(specLabel, key+":") {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			effectiveLabels = append(effectiveLabels, defaultLabel)
+		}
+	}
+
+	return effectiveLabels
+}
+
 // constructJobForRunnerGroup creates a Job object for the RunnerGroup
-func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1alpha1.RunnerGroup, registrationToken string) (*batchv1.Job, error) {
+func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1alpha1.RunnerGroup, registrationToken string, labels []string) (*batchv1.Job, error) {
 	// Generate random suffix for name
 	name := fmt.Sprintf("%s-%s", runnerGroup.Name, randString(8))
 
@@ -201,13 +275,14 @@ func (r *RunnerGroupReconciler) constructJobForRunnerGroup(runnerGroup *giteav1a
 		{Name: "GITEA_INSTANCE_URL", Value: runnerGroup.Spec.GiteaURL},
 		{Name: "GITEA_RUNNER_REGISTRATION_TOKEN", Value: registrationToken},
 		{Name: "GITEA_RUNNER_EPHEMERAL", Value: "true"},
+		{Name: "GITEA_RUNNER_NAME", Value: name},
 		{Name: "DOCKER_HOST", Value: "tcp://localhost:2376"},
 		{Name: "DOCKER_CERT_PATH", Value: "/certs/client"},
 		{Name: "DOCKER_TLS_VERIFY", Value: "1"},
 	}
 
-	if len(runnerGroup.Spec.Labels) > 0 {
-		labelsStr := strings.Join(runnerGroup.Spec.Labels, ",")
+	if len(labels) > 0 {
+		labelsStr := strings.Join(labels, ",")
 		envVars = append(envVars, corev1.EnvVar{Name: "GITEA_RUNNER_LABELS", Value: labelsStr})
 	}
 
@@ -274,14 +349,6 @@ func randString(length int) string {
 		b[i] = charset[seededRand.Intn(len(charset))]
 	}
 	return string(b)
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // SetupWithManager sets up the controller with the Manager.
