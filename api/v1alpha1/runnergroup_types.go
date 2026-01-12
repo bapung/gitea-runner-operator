@@ -32,20 +32,26 @@ const (
 	RunnerGroupScopeGlobal RunnerGroupScope = "global"
 	// RunnerGroupScopeOrg means the runner group is scoped to an organization
 	RunnerGroupScopeOrg RunnerGroupScope = "org"
+	// RunnerGroupScopeUser means the runner group is scoped to a user
+	RunnerGroupScopeUser RunnerGroupScope = "user"
 	// RunnerGroupScopeRepo means the runner group is scoped to a repository
 	RunnerGroupScopeRepo RunnerGroupScope = "repo"
 )
 
 // RunnerGroupSpec defines the desired state of RunnerGroup.
 type RunnerGroupSpec struct {
-	// Scope defines the scope of the runner (global, org, repo)
-	// +kubebuilder:validation:Enum=global;org;repo
+	// Scope defines the scope of the runner (global, org, user, repo)
+	// +kubebuilder:validation:Enum=global;org;user;repo
 	// +kubebuilder:validation:Required
 	Scope RunnerGroupScope `json:"scope"`
 
 	// Org is required if scope is 'org'
 	// +optional
 	Org string `json:"org,omitempty"`
+
+	// User is required if scope is 'user'
+	// +optional
+	User string `json:"user,omitempty"`
 
 	// Repo is required if scope is 'repo'
 	// +optional

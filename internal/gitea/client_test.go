@@ -32,6 +32,7 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 		name           string
 		scope          v1alpha1.RunnerGroupScope
 		org            string
+		user           string
 		repo           string
 		labels         []string
 		mockResponse   ActionWorkflowJobsResponse
@@ -87,12 +88,43 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 			expectedQueued: 2,
 			expectedError:  false,
 		},
+		{
+			name:   "user scope",
+			scope:  v1alpha1.RunnerGroupScopeUser,
+			user:   "testuser",
+			labels: []string{"linux"},
+			mockResponse: ActionWorkflowJobsResponse{
+				TotalCount: 1,
+				Jobs: []ActionWorkflowJob{
+					{ID: 1, Status: "queued", Labels: []string{"linux"}},
+				},
+			},
+			expectedQueued: 1,
+			expectedError:  false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+
+				// Handle User Repos call for User Scope
+				if tt.scope == v1alpha1.RunnerGroupScopeUser && strings.Contains(r.URL.Path, "/repos") && !strings.Contains(r.URL.Path, "/actions/jobs") {
+					repos := []Repository{
+						{
+							Name: "testrepo",
+							Owner: struct {
+								Login string `json:"login"`
+							}{Login: tt.user},
+							FullName: tt.user + "/testrepo",
+						},
+					}
+					json.NewEncoder(w).Encode(repos)
+					return
+				}
+
 				// Verify correct endpoint is called
 				expectedPath := ""
 				switch tt.scope {
@@ -102,6 +134,8 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 					expectedPath = "/api/v1/orgs/testorg/actions/jobs"
 				case v1alpha1.RunnerGroupScopeGlobal:
 					expectedPath = "/api/v1/admin/actions/jobs"
+				case v1alpha1.RunnerGroupScopeUser:
+					expectedPath = "/api/v1/repos/" + tt.user + "/testrepo/actions/jobs"
 				}
 
 				if !strings.HasPrefix(r.URL.Path, expectedPath) {
@@ -113,8 +147,6 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 				if !strings.HasPrefix(authHeader, "token ") {
 					t.Errorf("Expected Authorization header to start with 'token ', got %s", authHeader)
 				}
-
-				w.Header().Set("Content-Type", "application/json")
 
 				// Only return jobs for 'queued' status to simplify counting
 				if r.URL.Query().Get("status") == "queued" {
@@ -132,6 +164,7 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 				"test-token",
 				tt.scope,
 				tt.org,
+				tt.user,
 				tt.repo,
 				tt.labels,
 			)

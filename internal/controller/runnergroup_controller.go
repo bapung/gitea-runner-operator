@@ -129,6 +129,7 @@ func (r *RunnerGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		authToken,
 		runnerGroup.Spec.Scope,
 		runnerGroup.Spec.Org,
+		runnerGroup.Spec.User,
 		runnerGroup.Spec.Repo,
 		effectiveLabels,
 	)

@@ -13,8 +13,9 @@ metadata:
   name: my-repo-runner-1
   namespace: gitea-runner-system
 spec:
-  scope: repo
-  org: myorg # optional; ommited if scope == global
+  scope: repo # valid options: global, org or user, repo
+  org: myorg # optional; ommited if scope == global; mutually exclusive with user
+  user: myusername # optional; ommited if scope == global; mutually exclusive with org
   repo: myreponame # optional; ommited if scope == org || scope == global
   gitea:
     url: https://gitea.bpg.pw

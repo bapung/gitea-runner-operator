@@ -10,6 +10,8 @@ The Gitea Runner Operator is a Kubernetes controller designed to manage ephemera
 - **RunnerGroup CR**: The custom resource instance defining a runner pool.
 - **Ephemeral Runner**: A runner that executes exactly one job and then terminates.
 - **Gitea Instance**: The target Gitea server where CI/CD workflows are triggered.
+- **Runner Capabilities**: The set of labels a runner provides (e.g., `ubuntu-latest`).
+- **Job Requirements**: The set of labels a job requests (e.g., `ubuntu-latest`).
 
 ## 3. Custom Resource Definition (CRD)
 
@@ -24,16 +26,17 @@ The Gitea Runner Operator is a Kubernetes controller designed to manage ephemera
 
 The `spec` defines the configuration for the runner pool.
 
-| Field               | Type                           | Required    | Description                                                                                                 |
-| :------------------ | :----------------------------- | :---------- | :---------------------------------------------------------------------------------------------------------- |
-| `scope`             | Enum (`global`, `org`, `repo`) | Yes         | The scope of the runner.                                                                                    |
-| `org`               | String                         | Conditional | The organization name. Required if `scope` is `org`.                                                        |
-| `repo`              | String                         | Conditional | The repository name. Required if `scope` is `repo`.                                                         |
-| `gitea.url`         | String                         | Yes         | The base URL of the Gitea instance (e.g., `https://gitea.example.com`).                                     |
-| `labels`            | []String                       | No          | List of labels for the runner (e.g., `ubuntu-latest`, `app:infra`). Used by Gitea to match jobs to runners. |
-| `maxActiveRunners`  | Integer                        | Yes         | The maximum number of concurrent runner Jobs allowed for this specific RunnerGroup CR.                      |
-| `registrationToken` | SecretKeySelector              | Yes         | Reference to a Secret containing the runner registration token.                                             |
-| `authToken`         | SecretKeySelector              | Yes         | Reference to a Secret containing an API token to query Gitea for job statuses.                              |
+| Field               | Type                                   | Required    | Description                                                                                                 |
+| :------------------ | :------------------------------------- | :---------- | :---------------------------------------------------------------------------------------------------------- |
+| `scope`             | Enum (`global`, `org`, `user`, `repo`) | Yes         | The scope of the runner.                                                                                    |
+| `org`               | String                                 | Conditional | The organization name. Required if `scope` is `org`.                                                        |
+| `user`              | String                                 | Conditional | The username. Required if `scope` is `user`.                                                                |
+| `repo`              | String                                 | Conditional | The repository name. Required if `scope` is `repo`.                                                         |
+| `gitea.url`         | String                                 | Yes         | The base URL of the Gitea instance (e.g., `https://gitea.example.com`).                                     |
+| `labels`            | []String                               | No          | List of labels for the runner (e.g., `app:infra`). Defaults (e.g. `ubuntu-latest`) are added automatically. |
+| `maxActiveRunners`  | Integer                                | Yes         | The maximum number of concurrent runner Jobs allowed for this specific RunnerGroup CR.                      |
+| `registrationToken` | SecretKeySelector                      | Yes         | Reference to a Secret containing the runner registration token.                                             |
+| `authToken`         | SecretKeySelector                      | Yes         | Reference to a Secret containing an API token to query Gitea for job statuses.                              |
 
 #### 3.2.1 SecretKeySelector
 
@@ -42,7 +45,7 @@ Standard Kubernetes Secret reference:
 - `secretRef.name`: Name of the secret.
 - `secretRef.key`: Key within the secret containing the value.
 
-### 3.3 Status Schema (Optional but Recommended)
+### 3.3 Status Schema
 
 - `activeRunners`: Integer. Current count of running Jobs managed by this CR.
 - `lastCheckTime`: Timestamp. Last time the controller polled Gitea.
@@ -54,37 +57,44 @@ Standard Kubernetes Secret reference:
 The controller watches for changes to `RunnerGroup` resources.
 
 1.  **Validation**: Ensure `org` or `repo` are present based on `scope`.
-2.  **Job Cleanup**: (Optional) Check for and remove "stuck" jobs if TTL doesn't cover edge cases, though `ttlSecondsAfterFinished` is primary.
-3.  **Metric Collection**: Update status with current running job count.
-4.  **Polling**: The controller must implement a polling mechanism (loop) independent of the standard Reconcile trigger, or requeue the Reconcile event periodically (e.g., every 10-30 seconds).
+2.  **Job List**: List child Jobs to determine `activeRunners` count.
+3.  **Status Update**: Update CR status with current metrics.
+4.  **Capacity Check**: If `activeRunners >= maxActiveRunners`, stop scaling up.
+5.  **Polling**: Fetch job statistics from Gitea.
 
-### 4.2 Polling & Scaling Logic
+### 4.2 Polling & Scaling Strategy
 
-On every poll interval for a specific `RunnerGroup` CR:
+The operator uses a robust polling strategy to handle the disconnect between Kubernetes Pod startup time and Gitea's job queue state.
 
-1.  **Check Capacity**:
-    - Query Kubernetes for active `Jobs` owned by this `RunnerGroup` CR.
-    - If `count(active_jobs) >= maxActiveRunners`, stop. Do not spawn new runners.
+#### 4.2.1 Fetching Stats (`GetRunnerStats`)
 
-2.  **Fetch Queued Jobs**:
-    - Call Gitea API using `authToken`.
-    - Endpoint depends on scope:
-      - **Global**: Recursively fetch all workflow runs:
-        1. Fetch all organizations in the Gitea instance
-        2. For each organization, fetch all repositories under that org
-        3. For each repository, query `/repos/{owner}/{repo}/actions/runs?status=queued`
-        4. Additionally, fetch all user-owned repositories and query their workflow runs
-      - **Org**: Fetch all workflow runs in repos under the organization:
-        1. Fetch all repositories under the specified organization
-        2. For each repository, query `/repos/{owner}/{repo}/actions/runs?status=queued`
-      - **Repo**: Directly query `/repos/{owner}/{repo}/actions/runs?status=queued`
-    - Filter the returned runs:
-      - Must match the `labels` defined in the `RunnerGroup` CR.
+The controller queries Gitea for:
 
-3.  **Spawn Runner**:
-    - If a queued job is found and capacity allows, create a Kubernetes `Job`.
-    - **One Job per Queued Workflow**: Ideally, the logic should map 1 queued run -> 1 Runner Job.
-    - **Concurrency Control**: Ensure we don't spawn more jobs than `maxActiveRunners - currentActiveRunners`.
+1.  **Queued Jobs**: Jobs with status `queued`, `waiting`, or `pending`.
+    - **Label Filtering**: Jobs are filtered client-side. A job is considered a match if the RunnerGroup's capabilities (Spec labels + Default labels) are a superset of the Job's required labels.
+2.  **Running Jobs**: Jobs with status `running` that belong to this specific runner group (filtered by runner name prefix).
+
+#### 4.2.2 Deduplication Cache (`SpawnedJobsCache`)
+
+To prevent "double scheduling" (where multiple reconciliation loops spawn multiple runners for the same queued job before the first runner can pick it up), the controller maintains an in-memory cache:
+
+- **Key**: Gitea Job ID.
+- **Value**: Timestamp when the runner was spawned.
+- **TTL**: 5 minutes.
+
+#### 4.2.3 Scaling Algorithm
+
+1.  **Identify Candidates**: Iterate through the list of Queued Jobs from Gitea.
+2.  **Check Cache**:
+    - If Job ID is in cache and TTL has not expired: **Skip** (Runner already spawned).
+    - If Job ID is in cache and TTL expired: **Retry** (Runner likely failed to start).
+    - If Job ID is not in cache: **Candidate for spawning**.
+3.  **Calculate Slots**: `availableSlots = maxActiveRunners - activeRunners`.
+4.  **Spawn**: For each candidate, if `availableSlots > 0`:
+    - Create Kubernetes Job.
+    - Add Job ID to `SpawnedJobsCache`.
+    - Decrement `availableSlots`.
+5.  **Cleanup**: Remove Job IDs from the cache if they are no longer present in the Queued Jobs list returned by Gitea (implies they are now Running, Completed, or Cancelled).
 
 ## 5. Kubernetes Resource Generation
 
@@ -94,40 +104,44 @@ The controller creates a `batch/v1 Job`.
 
 **Metadata:**
 
-- `name`: `{runnergroup-cr-name}-{random-suffix}`
+- `name`: `{runnergroup-name}-{random-suffix}`
 - `namespace`: Same as `RunnerGroup` CR.
 - `labels`:
-  - `app`: `{runnergroup-cr-name}`
+  - `gitea.bpg.pw/runnergroup-name`: `{runnergroup-name}`
   - `gitea.bpg.pw/managed-by`: `gitea-runner-operator`
-  - `gitea.bpg.pw/runnergroup-name`: `{runnergroup-cr-name}`
 - `ownerReferences`: Pointing to the `RunnerGroup` CR.
 
 **Spec:**
 
-- `ttlSecondsAfterFinished`: 600 (Clean up finished jobs).
+- `ttlSecondsAfterFinished`: 600 (Auto-cleanup).
 - `template`:
   - `spec`:
     - `restartPolicy`: `OnFailure`
     - `containers`:
       - **Name**: `runner`
-      - **Image**: `gitea/act_runner:nightly-dind-rootless` (Default, potentially configurable in CR later).
-      - **SecurityContext**: `privileged: true` (Required for DIND).
+      - **Image**: `gitea/act_runner:nightly-dind-rootless`
       - **Env**:
         - `GITEA_INSTANCE_URL`: From `spec.gitea.url`.
-        - `GITEA_RUNNER_REGISTRATION_TOKEN`: From `spec.registrationToken`.
+        - `GITEA_RUNNER_REGISTRATION_TOKEN`: From Secret.
         - `GITEA_RUNNER_EPHEMERAL`: `"true"`.
-        - `GITEA_RUNNER_LABELS`: Comma-separated list from `spec.labels`.
-        - `DOCKER_HOST`: `tcp://localhost:2376`
-      - **VolumeMounts**:
-        - Mount docker socket or storage if necessary. The README example uses a PVC `act-runner-vol` mounted to `/data`. _Note: Using a shared PVC for ephemeral runners might cause race conditions. EmptyDir is preferred for truly ephemeral runners unless caching is strictly required and managed._
+        - `GITEA_RUNNER_NAME`: `{job-name}` (Matches Pod name for easier debugging).
+        - `GITEA_RUNNER_LABELS`: Comma-separated list of **Effective Labels**.
+          - **Effective Labels** = `spec.labels` + Default Gitea Labels (e.g., `ubuntu-latest:docker://node:16-bullseye`, `ubuntu-22.04:...`, etc.) unless explicitly overridden.
 
 ## 6. Gitea API Interaction
 
 - **Authentication**: Bearer token provided in `authToken`.
-- **Client**: HTTP Client with timeout.
+- **Endpoints Used**:
+  - `/api/v1/repos/{owner}/{repo}/actions/jobs` (Repo scope)
+  - `/api/v1/orgs/{org}/actions/jobs` (Org scope)
+  - `/api/v1/users/{user}/repos` + `/api/v1/repos/{owner}/{repo}/actions/jobs` (User scope)
+  - `/api/v1/admin/actions/jobs` (Global scope)
+- **Label Matching**:
+  - The controller implements logic to check: `Job.Labels ⊆ Runner.EffectiveLabels`.
+  - Supports both exact matches (`linux`) and schema matches (`ubuntu-latest` matches `ubuntu-latest:docker://...`).
 
 ## 7. Security Considerations
 
-- **Token Handling**: Registration and Auth tokens are read from Kubernetes Secrets and injected as Environment Variables. They are not stored in plain text in the CR.
-- **Privileged Mode**: The default `act_runner` image (dind) requires privileged mode. The Operator creates Jobs with this permission.
-- **Namespace Isolation**: The Operator should respect RBAC and only operate within allowed namespaces.
+- **Token Handling**: Tokens are injected via `valueFrom: secretKeyRef` env vars.
+- **Privileged Mode**: `act_runner` dind mode requires privileged security context.
+- **Namespace Isolation**: Controller operates within the namespace of the RunnerGroup.

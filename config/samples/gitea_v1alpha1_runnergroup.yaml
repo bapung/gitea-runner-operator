@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
 stringData:
   # The Gitea API Token (for the Operator to poll for jobs)
-  auth-token: "3430680995113a33a17715bb552882d504f5cf98"
+  auth-token: "MMUCFRXCbofYn2L0aT2OP2aug7JhChNJlULKNLgg"
   # The Runner Registration Token (for the Runner to register itself)
   registration-token: "5r4lpLA9rKCZZEHyUyKHeA187DoaElcTBySITRRi"
 ---
@@ -23,9 +23,10 @@ spec:
   giteaURL: "https://gitea.bpg.pw"
 
   # Scope of the runners (global, org, or repo)
-  scope: "repo"
+  scope: "org"
   org: "bapung" # Required if scope is 'org' or 'repo'
-  repo: "dummy-service-workflow" # Required if scope is 'repo'
+  user: "" # Required if scope is 'user' or 'repo'
+  #repo: "dummy-service-workflow" # Required if scope is 'repo'
 
   # Labels to identify this runner group
   labels:

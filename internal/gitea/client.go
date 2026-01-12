@@ -38,6 +38,7 @@ type Client interface {
 		authToken string,
 		scope v1alpha1.RunnerGroupScope,
 		org string,
+		user string,
 		repo string,
 		labels []string,
 	) (*RunnerStats, error)
@@ -118,6 +119,7 @@ func (c *HTTPClient) GetRunnerStats(
 	authToken string,
 	scope v1alpha1.RunnerGroupScope,
 	org string,
+	user string,
 	repo string,
 	labels []string,
 ) (*RunnerStats, error) {
@@ -126,6 +128,8 @@ func (c *HTTPClient) GetRunnerStats(
 		return c.getRunnerStatsForRepo(ctx, giteaURL, authToken, org, repo, labels)
 	case v1alpha1.RunnerGroupScopeOrg:
 		return c.getRunnerStatsForOrg(ctx, giteaURL, authToken, org, labels)
+	case v1alpha1.RunnerGroupScopeUser:
+		return c.getRunnerStatsForUser(ctx, giteaURL, authToken, user, labels)
 	case v1alpha1.RunnerGroupScopeGlobal:
 		return c.getRunnerStatsGlobal(ctx, giteaURL, authToken, labels)
 	default:
@@ -143,6 +147,28 @@ func (c *HTTPClient) getRunnerStatsForRepo(ctx context.Context, giteaURL, authTo
 func (c *HTTPClient) getRunnerStatsForOrg(ctx context.Context, giteaURL, authToken, org string, labels []string) (*RunnerStats, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/orgs/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), org)
 	return c.fetchRunnerStats(ctx, endpoint, authToken, labels)
+}
+
+// getRunnerStatsForUser fetches queued runs for all repos owned by a user
+func (c *HTTPClient) getRunnerStatsForUser(ctx context.Context, giteaURL, authToken, user string, labels []string) (*RunnerStats, error) {
+	repos, err := c.fetchReposForUser(ctx, giteaURL, authToken, user)
+	if err != nil {
+		return nil, err
+	}
+
+	var allQueuedJobs []ActionWorkflowJob
+	for _, repo := range repos {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/actions/jobs", strings.TrimSuffix(giteaURL, "/"), repo.Owner.Login, repo.Name)
+		stats, err := c.fetchRunnerStats(ctx, endpoint, authToken, labels)
+		if err != nil {
+			return nil, err
+		}
+		allQueuedJobs = append(allQueuedJobs, stats.QueuedJobs...)
+	}
+
+	return &RunnerStats{
+		QueuedJobs: allQueuedJobs,
+	}, nil
 }
 
 // getRunnerStatsGlobal fetches queued runs using admin-level API for global scope
@@ -456,6 +482,70 @@ func (c *HTTPClient) fetchUserRepos(ctx context.Context, giteaURL, authToken str
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		fmt.Printf("DEBUG: Response body: %s\n", string(body))
+
+		var repos []Repository
+		if err := json.Unmarshal(body, &repos); err != nil {
+			fmt.Printf("DEBUG: Failed to decode response: %v\n", err)
+			return nil, err
+		}
+
+		allRepos = append(allRepos, repos...)
+
+		if len(repos) < limit {
+			break
+		}
+
+		page++
+	}
+
+	return allRepos, nil
+}
+
+// fetchReposForUser fetches all repositories owned by a specific user with pagination
+func (c *HTTPClient) fetchReposForUser(ctx context.Context, giteaURL, authToken, username string) ([]Repository, error) {
+	var allRepos []Repository
+	page := 1
+	limit := 50
+
+	for {
+		endpoint := fmt.Sprintf("%s/api/v1/users/%s/repos", strings.TrimSuffix(giteaURL, "/"), username)
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("page", fmt.Sprintf("%d", page))
+		q.Set("limit", fmt.Sprintf("%d", limit))
+		u.RawQuery = q.Encode()
+
+		fmt.Printf("DEBUG: Fetching repos for user %s from %s\n", username, u.String())
+
+		req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "token "+authToken)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			fmt.Printf("DEBUG: Request failed: %v\n", err)
+			return nil, err
+		}
+
+		fmt.Printf("DEBUG: Response status: %s\n", resp.Status)
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			fmt.Printf("DEBUG: Error body: %s\n", string(body))
+			return nil, c.handleHTTPError(resp.StatusCode, body, "fetch user repos")
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		// fmt.Printf("DEBUG: Response body: %s\n", string(body))
 
 		var repos []Repository
 		if err := json.Unmarshal(body, &repos); err != nil {
