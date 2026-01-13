@@ -81,6 +81,21 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 			expectedError:  false,
 		},
 		{
+			name:   "repo scope (user owned)",
+			scope:  v1alpha1.RunnerGroupScopeRepo,
+			user:   "testuser",
+			repo:   "testrepo",
+			labels: []string{"linux"},
+			mockResponse: ActionWorkflowJobsResponse{
+				TotalCount: 1,
+				Jobs: []ActionWorkflowJob{
+					{ID: 1, Status: "queued", Labels: []string{"linux"}},
+				},
+			},
+			expectedQueued: 1,
+			expectedError:  false,
+		},
+		{
 			name:   "global scope with specific labels",
 			scope:  v1alpha1.RunnerGroupScopeGlobal,
 			labels: []string{"docker", "linux"},
@@ -135,9 +150,13 @@ func TestHTTPClient_GetRunnerStats(t *testing.T) {
 				expectedPath := ""
 				switch tt.scope {
 				case v1alpha1.RunnerGroupScopeRepo:
-					expectedPath = "/api/v1/repos/testorg/testrepo/actions/jobs"
+					owner := tt.org
+					if tt.user != "" {
+						owner = tt.user
+					}
+					expectedPath = "/api/v1/repos/" + owner + "/" + tt.repo + "/actions/jobs"
 				case v1alpha1.RunnerGroupScopeOrg:
-					expectedPath = "/api/v1/orgs/testorg/actions/jobs"
+					expectedPath = "/api/v1/orgs/" + tt.org + "/actions/jobs"
 				case v1alpha1.RunnerGroupScopeGlobal:
 					expectedPath = "/api/v1/admin/actions/jobs"
 				case v1alpha1.RunnerGroupScopeUser:

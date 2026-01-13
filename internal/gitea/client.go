@@ -131,6 +131,9 @@ func (c *HTTPClient) GetRunnerStats(
 ) (*RunnerStats, error) {
 	switch scope {
 	case v1alpha1.RunnerGroupScopeRepo:
+		if user != "" {
+			return c.getRunnerStatsForRepo(ctx, giteaURL, authToken, user, repo, labels)
+		}
 		return c.getRunnerStatsForRepo(ctx, giteaURL, authToken, org, repo, labels)
 	case v1alpha1.RunnerGroupScopeOrg:
 		return c.getRunnerStatsForOrg(ctx, giteaURL, authToken, org, labels)
