@@ -16,7 +16,14 @@ A Kubernetes Operator to manage ephemeral Gitea Act runners. This operator autom
 
 ## Installation (Helm Chart)
 
-### Incoming
+You can install the operator using the provided Helm chart.
+
+```bash
+# Install the chart
+helm upgrade --install gitea-runner-operator ./charts/gitea-runner-operator \
+  --namespace gitea-runner-operator-system \
+  --create-namespace
+```
 
 ## Installation (Manual)
 

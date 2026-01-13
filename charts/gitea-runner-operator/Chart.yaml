@@ -1,0 +1,17 @@
+apiVersion: v2
+name: gitea-runner-operator
+description: A Helm chart for managing Gitea Runner Operator
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+keywords:
+  - gitea
+  - runner
+  - operator
+  - ci
+  - cd
+home: https://github.com/bapung/gitea-runner-operator
+sources:
+  - https://github.com/bapung/gitea-runner-operator
+maintainers:
+  - name: bapung
