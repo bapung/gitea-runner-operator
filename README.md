@@ -185,3 +185,7 @@ The default runner image uses `dind-rootless`. This requires the pod to run with
 - Helm Chart
 - Custom Runner Job Spec definition
 - Push mode using Webhook trigger
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
