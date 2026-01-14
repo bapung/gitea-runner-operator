@@ -1,8 +1,9 @@
-name: Build and Push Docker Image
+name: Build and Push
 
 on:
   push:
     branches: ["main", "master"]
+    tags: ["v*"]
   pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
@@ -12,7 +13,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  build-image:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,6 +22,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -38,14 +42,63 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
-            type=sha
+            type=sha,prefix=sha-
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  publish-chart:
+    needs: build-image
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+
+      - name: Get Version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Update Chart Version and Image Tag
+        run: |
+          CHART_PATH="charts/gitea-runner-operator"
+
+          # Update version (stripping v)
+          sed -i "s/^version:.*/version: ${{ env.VERSION }}/" $CHART_PATH/Chart.yaml
+
+          # Update appVersion (keeping v, matches docker tag)
+          sed -i "s/^appVersion:.*/appVersion: \"v${{ env.VERSION }}\"/" $CHART_PATH/Chart.yaml
+
+          # Update image tag in values.yaml to match the release
+          # Replaces 'tag: "latest"' with 'tag: "v1.2.3"'
+          sed -i 's/tag: "latest"/tag: "v${{ env.VERSION }}"/' $CHART_PATH/values.yaml
+
+      - name: Package Helm Chart
+        run: |
+          helm package charts/gitea-runner-operator
+
+      - name: Push Helm Chart
+        run: |
+          # Push to oci://ghcr.io/<owner>/charts
+          # The chart will be accessible as oci://ghcr.io/<owner>/charts/gitea-runner-operator
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm push gitea-runner-operator-${{ env.VERSION }}.tgz oci://${{ env.REGISTRY }}/${OWNER}/charts

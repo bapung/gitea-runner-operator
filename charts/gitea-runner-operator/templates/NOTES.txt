@@ -1,0 +1,37 @@
+Gitea Runner Operator has been installed!
+
+1. Check if the controller is running:
+
+   kubectl get pods -n {{ .Release.Namespace }} -l control-plane=controller-manager
+
+2. Create a Secret with your Gitea credentials:
+
+   kubectl create secret generic gitea-runner-secret \
+     --namespace {{ .Release.Namespace }} \
+     --from-literal=registrationToken=<YOUR_TOKEN> \
+     --from-literal=authToken=<YOUR_API_TOKEN>
+
+3. Create a RunnerGroup instance to spawn runners:
+
+   apiVersion: gitea.bpg.pw/v1alpha1
+   kind: RunnerGroup
+   metadata:
+     name: example-runner
+     namespace: {{ .Release.Namespace }}
+   spec:
+     scope: repo
+     org: your-org
+     repo: your-repo
+     giteaURL: https://gitea.example.com
+     maxActiveRunners: 2
+     labels: ["ubuntu-latest"]
+     registrationToken:
+       secretRef:
+         name: gitea-runner-secret
+         key: registrationToken
+     authToken:
+       secretRef:
+         name: gitea-runner-secret
+         key: authToken
+
+For more details, please visit: https://github.com/bapung/gitea-runner-operator

@@ -16,7 +16,14 @@ A Kubernetes Operator to manage ephemeral Gitea Act runners. This operator autom
 
 ## Installation (Helm Chart)
 
-### Incoming
+You can install the operator using the provided Helm chart.
+
+```bash
+# Install the chart
+helm upgrade --install gitea-runner-operator ./charts/gitea-runner-operator \
+  --namespace gitea-runner-operator-system \
+  --create-namespace
+```
 
 ## Installation (Manual)
 
@@ -63,27 +70,39 @@ kubectl apply -f secret.yaml
 
 ## Configuration
 
-The core resource is the `RunnerGroup`. Below are examples for different scopes.
-
-### 1. Repository Scope
-
-Spawns runners only for jobs in a specific repository.
+The core resource is the `RunnerGroup`. Use the `scope` field to control which jobs the runner picks up.
 
 ```yaml
 apiVersion: gitea.bpg.pw/v1alpha1
 kind: RunnerGroup
 metadata:
-  name: my-repo-runner
+  name: example-runner
   namespace: gitea-runner-operator-system
 spec:
-  scope: repo
-  org: myorg
-  repo: myrepo
+  # Base Gitea URL
   giteaURL: https://gitea.example.com
+
+  # Scope configuration:
+  # - global: Runs all jobs (requires instance admin token)
+  # - org:    Runs jobs for a specific organization (requires `org` field)
+  # - user:   Runs jobs for a specific user (requires `user` field)
+  # - repo:   Runs jobs for a specific repository (requires `org` and `repo` fields)
+  scope: repo
+
+  # Scope-specific fields (uncomment as needed based on scope):
+  org: my-org # Required for 'org' or 'repo' scopes
+  repo: my-repo # Required for 'repo' scope
+  # user: my-user   # Required for 'user' or 'repo' scope
+
+  # Maximum concurrent runners
   maxActiveRunners: 5
+
+  # Labels supported by this runner group
   labels:
     - "ubuntu-latest"
-    - "custom-label"
+    - "custom-label:docker://node:16"
+
+  # Credentials
   registrationToken:
     secretRef:
       name: gitea-runner-secret
@@ -92,62 +111,6 @@ spec:
     secretRef:
       name: gitea-runner-secret
       key: authToken
-```
-
-### 2. Organization Scope
-
-Spawns runners for any repository within the organization.
-
-```yaml
-apiVersion: gitea.bpg.pw/v1alpha1
-kind: RunnerGroup
-metadata:
-  name: my-org-runner
-  namespace: gitea-runner-operator-system
-spec:
-  scope: org
-  org: myorg
-  # repo is omitted
-  giteaURL: https://gitea.example.com
-  maxActiveRunners: 10
-  # ... (tokens)
-```
-
-### 3. User Scope
-
-Spawns runners for any repository owned by the specified user.
-
-```yaml
-apiVersion: gitea.bpg.pw/v1alpha1
-kind: RunnerGroup
-metadata:
-  name: my-user-runner
-  namespace: gitea-runner-operator-system
-spec:
-  scope: user
-  user: myusername
-  # org and repo are omitted
-  giteaURL: https://gitea.example.com
-  maxActiveRunners: 3
-  # ... (tokens)
-```
-
-### 4. Global Scope
-
-Spawns runners for any job in the Gitea instance (Admin level).
-
-```yaml
-apiVersion: gitea.bpg.pw/v1alpha1
-kind: RunnerGroup
-metadata:
-  name: global-runner
-  namespace: gitea-runner-operator-system
-spec:
-  scope: global
-  # org, user, and repo are omitted
-  giteaURL: https://gitea.example.com
-  maxActiveRunners: 20
-  # ... (tokens)
 ```
 
 ## How it works
